@@ -54,3 +54,6 @@ yarn-error.log*
 
 # Dependencies
 node_modules/
+
+# Terraform
+.terraform
