@@ -1,0 +1,152 @@
+# Pipeline Terraform cho AIforITOps.
+# - PR vào main  -> chỉ chạy Validate + Plan (không apply gì cả)
+# - Merge vào main -> chạy Plan lại rồi dừng chờ duyệt (Environment approval),
+#   Apply chỉ chạy sau khi có người bấm Approve trong Azure DevOps.
+#
+# Setup 1 lần trước khi dùng pipeline này (xem terraform/README.md):
+#   1. Tạo Service Connection kiểu "Azure Resource Manager" (khuyến nghị: Workload
+#      Identity federation) -> điền tên vào biến serviceConnection bên dưới.
+#   2. Tạo Environment tên "aiforitops-prod" trong Azure DevOps (Pipelines ->
+#      Environments) và thêm "Approvals" check để bắt buộc duyệt trước khi apply.
+#   3. Tạo storage account cho remote state (xem terraform/backend.hcl.example)
+#      và điền lại 4 biến backend* bên dưới cho khớp.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/*
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/*
+
+variables:
+  serviceConnection: 'aiforitops-azure-connection' # đổi thành tên service connection thật của bạn
+  workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+  backendResourceGroup: 'rg-tfstate'
+  backendStorageAccount: '<TEN_STORAGE_UNIQUE>' # đổi thành storage account thật
+  backendContainer: 'tfstate'
+  backendKey: 'aiforitops.tfstate'
+
+stages:
+  - stage: Validate
+    displayName: 'Terraform Validate'
+    jobs:
+      - job: Validate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: '1.7.5'
+
+          - task: TerraformTaskV4@4
+            displayName: 'terraform init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: $(workingDirectory)
+              backendServiceArm: $(serviceConnection)
+              backendAzureRmResourceGroupName: $(backendResourceGroup)
+              backendAzureRmStorageAccountName: $(backendStorageAccount)
+              backendAzureRmContainerName: $(backendContainer)
+              backendAzureRmKey: $(backendKey)
+
+          - script: terraform fmt -check -recursive
+            displayName: 'terraform fmt -check'
+            workingDirectory: $(workingDirectory)
+
+          - task: TerraformTaskV4@4
+            displayName: 'terraform validate'
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: $(workingDirectory)
+
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    dependsOn: Validate
+    jobs:
+      - job: Plan
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: '1.7.5'
+
+          - task: TerraformTaskV4@4
+            displayName: 'terraform init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: $(workingDirectory)
+              backendServiceArm: $(serviceConnection)
+              backendAzureRmResourceGroupName: $(backendResourceGroup)
+              backendAzureRmStorageAccountName: $(backendStorageAccount)
+              backendAzureRmContainerName: $(backendContainer)
+              backendAzureRmKey: $(backendKey)
+
+          - task: TerraformTaskV4@4
+            displayName: 'terraform plan'
+            inputs:
+              provider: 'azurerm'
+              command: 'plan'
+              workingDirectory: $(workingDirectory)
+              commandOptions: '-out=$(Pipeline.Workspace)/tfplan -var="principal_id=$(TF_VAR_principal_id)"'
+              environmentServiceNameAzureRM: $(serviceConnection)
+
+          - publish: $(Pipeline.Workspace)/tfplan
+            artifact: tfplan
+
+  # Stage Apply CHỈ chạy khi build được trigger từ nhánh main (không chạy trên PR),
+  # và sẽ dừng chờ approval nhờ Environment "aiforitops-prod" đã cấu hình check.
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: Apply
+        pool:
+          vmImage: ubuntu-latest
+        environment: 'aiforitops-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: tfplan
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: '1.7.5'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'terraform init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: $(workingDirectory)
+                    backendServiceArm: $(serviceConnection)
+                    backendAzureRmResourceGroupName: $(backendResourceGroup)
+                    backendAzureRmStorageAccountName: $(backendStorageAccount)
+                    backendAzureRmContainerName: $(backendContainer)
+                    backendAzureRmKey: $(backendKey)
+
+                - task: TerraformTaskV4@4
+                  displayName: 'terraform apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    workingDirectory: $(workingDirectory)
+                    commandOptions: '$(Pipeline.Workspace)/tfplan/tfplan'
+                    environmentServiceNameAzureRM: $(serviceConnection)

@@ -1,0 +1,14 @@
+# Copy thành backend.hcl (đã .gitignore) rồi điền tên storage account thật của bạn.
+# Tạo storage account này 1 lần bằng tay trước (KHÔNG quản lý bằng chính Terraform
+# này, vì nó phải tồn tại trước khi Terraform có backend để lưu state):
+#
+#   az group create -n rg-tfstate -l japaneast
+#   az storage account create -g rg-tfstate -n <TEN_STORAGE_UNIQUE> --sku Standard_LRS
+#   az storage container create --account-name <TEN_STORAGE_UNIQUE> -n tfstate
+#
+# Sau đó chạy: terraform init -backend-config="backend.hcl"
+
+resource_group_name  = "rg-tfstate"
+storage_account_name = "<TEN_STORAGE_UNIQUE>"
+container_name        = "tfstate"
+key                    = "aiforitops.tfstate"

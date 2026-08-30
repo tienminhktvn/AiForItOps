@@ -1,0 +1,31 @@
+# Copy file này thành terraform.tfvars rồi chỉnh lại giá trị của bạn.
+# terraform.tfvars đã được .gitignore — KHÔNG commit file thật lên git.
+
+resource_group_name = "aiforitops-rg"
+location            = "japaneast"
+
+# Lấy bằng: az ad signed-in-user show --query id -o tsv
+principal_id = ""
+
+# Đổi nếu tên bị trùng (ACR/KeyVault/CosmosDB/ServiceBus/OpenAI cần globally unique,
+# terraform tự nối thêm suffix random nên thường không cần đổi các dòng dưới đây).
+acr_name                  = "aiforitopsacr"
+aks_name                  = "aiforitops-aks"
+cosmosdb_account_name     = "aiforitops-cosmos"
+servicebus_namespace_name = "aiforitops-sb"
+keyvault_name             = "kv-aiops"
+openai_resource_name      = "aiforitops-openai"
+
+# Free-tier / Azure for Students
+aks_vm_size            = "Standard_D2s_v3"
+aks_node_count         = 2
+aks_sku_tier           = "Free"
+cosmosdb_free_tier_enabled = true
+servicebus_sku         = "Basic"
+
+# OpenAI — đổi region nếu japaneast không có quota cho model bên dưới
+openai_location        = "japaneast"
+openai_deployment_name = "gpt-5-mini"
+openai_model_name      = "gpt-5-mini"
+openai_model_version   = "2025-08-07"
+openai_sku_capacity    = 1

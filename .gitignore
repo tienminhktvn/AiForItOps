@@ -56,4 +56,19 @@ yarn-error.log*
 node_modules/
 
 # Terraform
-.terraform
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.*
+!*.tfstate.example
+*.tfvars
+!*.tfvars.example
+*.tfplan
+tfplan
+backend.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
