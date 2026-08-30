@@ -19,7 +19,7 @@ spec:
         workload: "true"
       containers:
       - name: adminsite
-        image: <your_acrname>.azurecr.io/adminsite:latest
+        image: aiforitopsacr.azurecr.io/adminsite:latest
         ports:
         - containerPort: 80
         resources:
@@ -99,3 +99,5 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: keyvault-openai-deployment
+
+

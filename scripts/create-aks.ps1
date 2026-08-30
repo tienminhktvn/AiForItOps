@@ -18,22 +18,37 @@ $nodepoolName = $envVars['NODEPOOL_NAME']
 
 #Create new User-Assigned Managed Identity
 $identityName = "$aksName-identity"
-az identity create --resource-group $resourceGroup --name $identityName --location $location
+# az identity create --resource-group $resourceGroup --name $identityName --location $location
 $identityId = az identity show --resource-group $resourceGroup --name $identityName --query id -o tsv
 
-# Create AKS cluster, attach ACR, enable Key Vault CSI driver addon, and assign managed identity
-az aks create --resource-group $resourceGroup --name $aksName --node-count 2 --node-vm-size Standard_D2s_v3 --network-plugin azure --no-ssh-key -x --attach-acr $acrName --enable-addons azure-keyvault-secrets-provider --assign-identity $identityId
+# # Create AKS cluster, attach ACR, enable Key Vault CSI driver addon, and assign managed identity
+# az aks create --resource-group $resourceGroup --name $aksName --node-count 2 --node-vm-size Standard_D2s_v3 --network-plugin azure --no-ssh-key -x --attach-acr $acrName --enable-addons azure-keyvault-secrets-provider --assign-identity $identityId
 
-#Create AKS node pool to run the workloads
-az aks nodepool add --resource-group $resourceGroup --cluster-name $aksName --name $nodepoolName --node-count 2 --node-vm-size Standard_D2s_v3
-
-# Assign the managed identity to the node pool
+# Retrieve the default node pool's VMSS infrastructure details
+Write-Host "Retrieving AKS infrastructure details..." -ForegroundColor Cyan
 $VMSSresourceGroup = az aks show --resource-group $resourceGroup --name $aksName --query "nodeResourceGroup" -o tsv
-$VMSSnodepoolName = az vmss list --resource-group $VMSSresourceGroup --query "[].name" -o tsv | Select-String "$nodepoolName"
+$VMSSnodepoolName  = az vmss list --resource-group $VMSSresourceGroup --query "[0].name" -o tsv
+
+if ([string]::IsNullOrEmpty($VMSSnodepoolName)) {
+    Write-Error "No VMSS found in Resource Group $VMSSresourceGroup!"
+    exit 1
+}
+
+Write-Host "Detected VMSS: $VMSSnodepoolName" -ForegroundColor Green
+
+# Assign the Managed Identity to the current VMSS for the Key Vault CSI Secret Driver
+Write-Host "Assigning Managed Identity to VMSS..." -ForegroundColor Yellow
 az vmss identity assign --resource-group $VMSSresourceGroup --name $VMSSnodepoolName --identities $identityId
 
-#Update VMSS instances
-az vmss update-instances -g $VMSSresourceGroup -n $VMSSnodepoolName --instance-ids *
+Write-Host "Updating VMSS instances to apply identity changes..." -ForegroundColor Yellow
+az vmss update-instances --resource-group $VMSSresourceGroup --name $VMSSnodepoolName --instance-ids *
 
-# Get AKS credentials
-az aks get-credentials --resource-group $resourceGroup --name $aksName
+# Retrieve and merge AKS credentials into local Kubeconfig
+Write-Host "Merging AKS Kubeconfig..." -ForegroundColor Cyan
+az aks get-credentials --resource-group $resourceGroup --name $aksName --overwrite-existing
+
+# Label all existing nodes with 'workload=true' to satisfy the k8s nodeSelector constraint
+Write-Host "Labeling Kubernetes nodes with workload=true..." -ForegroundColor Cyan
+kubectl label nodes --all workload=true --overwrite
+
+Write-Host "AKS lab configuration completed successfully!" -ForegroundColor Green

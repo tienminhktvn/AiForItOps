@@ -19,7 +19,7 @@ spec:
         workload: "true"
       containers:
       - name: productworker
-        image: <your_acrname>.azurecr.io/productworker:latest
+        image: aiforitopsacr.azurecr.io/productworker:latest
         resources:
           requests:
             cpu: "100m"
@@ -70,3 +70,5 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: keyvault-servicebus
+
+

@@ -33,9 +33,11 @@ Write-Host "Azure OpenAI resource '$openaiName' deployed to resource group '$res
 az cognitiveservices account deployment create `
   --resource-group $resourceGroup `
   --name $openaiName `
-  --model-name $deploymentName `
+  --deployment-name $deploymentName `
   --model-name $modelName `
   --model-version $modelVersion `
-  --model-format OpenAI
+  --model-format OpenAI `
+  --sku-name "GlobalStandard" `
+  --sku-capacity 1
 
 Write-Host "Azure OpenAI deployment '$deploymentName' deployed to Azure OpenAI '$openaiName' in location '$location'."
