@@ -1,6 +1,8 @@
 # Giải thích cú pháp Terraform & Kiến trúc — AIforITOps
 
 > Đọc file này sau khi đã làm xong Phase 2 (Terraform cơ bản) trong [../LO-TRINH-HOC-AZURE-TERRAFORM.md](../LO-TRINH-HOC-AZURE-TERRAFORM.md). Mục tiêu: hiểu **từng dòng cú pháp** đang dùng trong folder `terraform/` này, và hiểu **bức tranh kiến trúc tổng thể**.
+>
+> Cập nhật: project đã được tách thành **root module** (`main.tf`, `variables.tf`, `outputs.tf`) gọi 9 **child module** trong `modules/` (mỗi module = 1 module Bicep gốc). Các ví dụ dưới đây trích từ NỘI DUNG bên trong child module — khi tham chiếu từ root/module khác, địa chỉ đầy đủ có thêm tiền tố `module.<tên_module>.`, xem mục 1.10.
 
 ---
 
@@ -30,17 +32,28 @@ resource "azurerm_resource_group" "rg" {
 - `"rg"` — **local name**: tên bạn tự đặt, chỉ dùng để tham chiếu **bên trong code Terraform**, KHÔNG phải tên resource thật trên Azure (tên thật nằm trong field `name = ...`).
 - Muốn tham chiếu lại resource này ở file khác, viết `azurerm_resource_group.rg.<field>`, ví dụ `azurerm_resource_group.rg.name`, `azurerm_resource_group.rg.location`, `azurerm_resource_group.rg.id`.
 
-Đây chính là cách các file trong project nối với nhau. Ví dụ trong [acr.tf](acr.tf):
+Đây chính là cách các file trong project nối với nhau. Ví dụ trong [modules/acr/main.tf](modules/acr/main.tf) — lưu ý bên trong module này, `azurerm_resource_group.rg` không tồn tại nữa (module không được phép "nhìn" trực tiếp resource của root), thay vào đó nhận qua `var.location`/`var.resource_group_name` do root truyền vào ([main.tf](main.tf)):
 
 ```hcl
+# modules/acr/main.tf
 resource "azurerm_container_registry" "acr" {
-  location            = azurerm_resource_group.rg.location   # <- tham chiếu sang main.tf
-  resource_group_name = azurerm_resource_group.rg.name       # <- tham chiếu sang main.tf
+  location            = var.location               # <- input do root truyền vào
+  resource_group_name = var.resource_group_name    # <- input do root truyền vào
   ...
 }
 ```
 
-Khi bạn viết `azurerm_resource_group.rg.location`, Terraform tự hiểu: **"acr" phải được tạo SAU "rg"** — đây gọi là **implicit dependency** (phụ thuộc ngầm). Bạn không cần tự khai báo thứ tự tạo resource, Terraform tự dựng "dependency graph" (xem Phần 3) từ các tham chiếu này.
+```hcl
+# main.tf (root) - nơi TRUYỀN giá trị vào 2 var ở trên
+module "acr" {
+  source               = "./modules/acr"
+  location             = azurerm_resource_group.rg.location   # <- tham chiếu resource RG ở root
+  resource_group_name  = azurerm_resource_group.rg.name
+  ...
+}
+```
+
+Khi root viết `azurerm_resource_group.rg.location` để truyền vào `module "acr"`, Terraform tự hiểu: **module `acr` phải được apply SAU `rg`** — đây gọi là **implicit dependency** (phụ thuộc ngầm), hoạt động xuyên qua ranh giới module y hệt như giữa 2 resource cùng file. Bạn không cần tự khai báo thứ tự tạo resource, Terraform tự dựng "dependency graph" (xem Phần 3) từ các tham chiếu này.
 
 ### 1.2 String interpolation — `"${...}"`
 
@@ -74,11 +87,23 @@ variable "location" {
 data "azurerm_client_config" "current" {}
 ```
 
-Khác với `resource` (tạo mới), `data` chỉ **đọc**. Ở đây nó đọc thông tin về **danh tính đang chạy `terraform apply`** (chính bạn nếu chạy local, hoặc service principal nếu chạy trong pipeline). Dùng ở [keyvault.tf](keyvault.tf):
+Khác với `resource` (tạo mới), `data` chỉ **đọc**. Ở đây nó đọc thông tin về **danh tính đang chạy `terraform apply`** (chính bạn nếu chạy local, hoặc service principal nếu chạy trong pipeline). Khai báo ở root ([main.tf](main.tf)), vì các `module` không tự gọi được `data` này — phải nhận qua input giống mọi thứ khác:
 
 ```hcl
+# main.tf (root)
+data "azurerm_client_config" "current" {}
+
+module "keyvault" {
+  source                      = "./modules/keyvault"
+  terraform_caller_object_id = data.azurerm_client_config.current.object_id
+  ...
+}
+```
+
+```hcl
+# modules/keyvault/main.tf
 resource "azurerm_role_assignment" "terraform_caller_kv_officer" {
-  principal_id = data.azurerm_client_config.current.object_id
+  principal_id = var.terraform_caller_object_id
 }
 ```
 
@@ -100,32 +125,36 @@ resource "azurerm_role_assignment" "user_kv_officer" {
 
 `count` nhận 1 số nguyên: 0 = không tạo resource này, N = tạo N bản sao (đánh số `[0]`, `[1]`...). Ở đây dùng kiểu "if": nếu bạn có set `principal_id` thì tạo 1 role assignment, nếu để trống (`""`) thì bỏ qua. Đây là toán tử 3 ngôi quen thuộc: `điều_kiện ? giá_trị_nếu_đúng : giá_trị_nếu_sai`.
 
-### 1.6 `depends_on` — phụ thuộc tường minh
+### 1.6 `depends_on` — phụ thuộc tường minh (kể cả xuyên qua output của module)
 
 ```hcl
-resource "azurerm_key_vault_secret" "cosmosdb_connectionstring" {
-  ...
+# modules/keyvault/outputs.tf
+output "id_ready_for_secrets" {
+  value      = azurerm_key_vault.kv.id
   depends_on = [azurerm_role_assignment.terraform_caller_kv_officer]
 }
 ```
 
-Bình thường Terraform tự suy ra thứ tự qua tham chiếu (mục 1.1). Nhưng ở đây, việc "ghi được secret" phụ thuộc vào role assignment đã **có hiệu lực thật sự trên Azure AD** (không chỉ là đã gọi API tạo xong) — một quan hệ mà Terraform không tự nhìn thấy qua tham chiếu field. `depends_on` ép buộc: chờ role assignment xong hẳn rồi mới thử ghi secret.
+Bình thường Terraform tự suy ra thứ tự qua tham chiếu (mục 1.1). Nhưng ở đây, việc "ghi được secret" phụ thuộc vào role assignment đã **có hiệu lực thật sự trên Azure AD** (không chỉ là đã gọi API tạo xong) — một quan hệ mà Terraform không tự nhìn thấy qua tham chiếu field thông thường. `depends_on` ép buộc: chờ role assignment xong hẳn rồi mới trả giá trị `id_ready_for_secrets` ra ngoài.
+
+`output` cũng nhận được `depends_on`, không chỉ `resource` — đây chính là mánh dùng để "xuất khẩu" 1 ràng buộc thời gian ra khỏi module: [main.tf](main.tf) gọi `module "secrets"` với `keyvault_id = module.keyvault.id_ready_for_secrets` (**không phải** `module.keyvault.id` thường) → module `secrets` tự động phải đợi role assignment xong, dù bản thân nó không biết gì về role assignment đó tồn tại. Cùng pattern này được dùng ở [modules/identity/outputs.tf](modules/identity/outputs.tf) để ép mọi module dùng đến identity (acr, keyvault, aks) phải đợi role `Managed Identity Operator` lan truyền xong trong Azure AD (~30s, xem `time_sleep` ở mục dưới).
 
 ### 1.7 Nested block vs attribute — 2 cách khai báo khác nhau trong CÙNG 1 resource
 
 ```hcl
+# modules/aks/main.tf
 resource "azurerm_kubernetes_cluster" "aks" {
-  name     = var.aks_name          # <- ATTRIBUTE: key = value
-  sku_tier = var.aks_sku_tier      # <- ATTRIBUTE
+  name     = var.name              # <- ATTRIBUTE: key = value
+  sku_tier = var.sku_tier          # <- ATTRIBUTE
 
   default_node_pool {              # <- NESTED BLOCK: không có dấu =
     name       = "default"
-    node_count = var.aks_node_count
+    node_count = var.node_count
   }
 
   identity {                       # <- NESTED BLOCK khác
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.aks_identity.id]
+    identity_ids = [var.identity_id]   # <- var.identity_id = module.identity.id truyền từ root
   }
 }
 ```
@@ -138,7 +167,31 @@ Terraform tự động đánh dấu `sensitive = true` cho một số attribute 
 - Không bao giờ commit `.tfstate` lên git (đã chặn ở `.gitignore` gốc).
 - Dùng remote backend (Azure Storage) để state được mã hoá at-rest và giới hạn quyền truy cập, thay vì nằm trên máy local.
 
-### 1.9 Tóm tắt vòng đời lệnh
+### 1.9 `module` — gói 1 nhóm resource thành khối tái sử dụng được
+
+```hcl
+module "identity" {
+  source = "./modules/identity"
+
+  resource_group_name = azurerm_resource_group.rg.name
+  location             = azurerm_resource_group.rg.location
+  tags                 = var.tags
+}
+```
+
+- `source` — đường dẫn tới thư mục chứa module (ở đây là thư mục local `modules/identity/`; module cũng có thể trỏ tới 1 Git repo hoặc Terraform Registry, nhưng project này chỉ dùng local module).
+- Các dòng còn lại (`resource_group_name`, `location`, `tags`) là **giá trị truyền vào các `variable` khai báo bên trong `modules/identity/variables.tf`** — y hệt cách bạn gọi hàm và truyền tham số.
+- Muốn lấy giá trị **ra khỏi** module, dùng `output` bên trong module + tham chiếu `module.<tên>.<tên_output>` từ bên ngoài, ví dụ [main.tf](main.tf):
+  ```hcl
+  module "acr" {
+    source                     = "./modules/acr"
+    aks_identity_principal_id = module.identity.principal_id   # <- lấy output từ module identity
+  }
+  ```
+- **Ranh giới quan trọng**: code BÊN TRONG 1 module chỉ nhìn thấy `var.*` (input của chính nó) và resource nó tự tạo — KHÔNG nhìn thấy resource của module khác hay của root, dù chúng nằm cùng 1 lần `terraform apply`. Đây là lý do `modules/acr/main.tf` phải nhận `var.aks_identity_principal_id` thay vì tự viết `azurerm_user_assigned_identity.aks_identity.principal_id` như hồi còn là 1 file phẳng.
+- **Địa chỉ resource đổi khi vào module**: `azurerm_container_registry.acr` (khi còn ở root) trở thành `module.acr.azurerm_container_registry.acr` trong state — chạy `terraform state list` sẽ thấy tiền tố `module.<tên>.` cho mọi resource nằm trong module.
+
+### 1.10 Tóm tắt vòng đời lệnh
 
 | Lệnh | Làm gì | Có động tới Azure thật không |
 |---|---|---|
@@ -155,24 +208,24 @@ Terraform tự động đánh dấu `sensitive = true` cho một số attribute 
 
 ```mermaid
 flowchart TB
-    subgraph RG["Resource Group: aiforitops-rg"]
-        subgraph VNET["VNet 10.0.0.0/16 (network.tf)"]
+    subgraph RG["Resource Group: aiforitops-rg (root main.tf)"]
+        subgraph VNET["VNet 10.0.0.0/16 (module.network)"]
             SUBAKS["Subnet aks-subnet\n10.0.1.0/24"]
             SUBPE["Subnet pe-subnet\n10.0.2.0/24"]
         end
 
-        ID["User-Assigned Identity\nid-aks-keyvault\n(identity.tf)"]
+        ID["User-Assigned Identity\nid-aks-keyvault\n(module.identity)"]
 
-        subgraph AKSC["AKS Cluster (compute.tf)"]
+        subgraph AKSC["AKS Cluster (module.aks)"]
             NODE["Node pool 'default'\n2 node Standard_D2s_v3\nCNI Overlay"]
             CSI["Key Vault CSI Driver\n(secret rotation 2m)"]
         end
 
-        ACR["Container Registry\n(acr.tf)"]
-        KV["Key Vault - RBAC mode\n(keyvault.tf)"]
-        COSMOS["CosmosDB account\nfree tier, 2 container\n(cosmosdb.tf)"]
-        SB["Service Bus namespace\nBasic + 1 queue\n(servicebus.tf)"]
-        OAI["Azure OpenAI\npublic network: OFF\n(ai_services.tf)"]
+        ACR["Container Registry\n(module.acr)"]
+        KV["Key Vault - RBAC mode\n(module.keyvault)"]
+        COSMOS["CosmosDB account\nfree tier, 2 container\n(module.cosmosdb)"]
+        SB["Service Bus namespace\nBasic + 1 queue\n(module.servicebus)"]
+        OAI["Azure OpenAI\npublic network: OFF\n(module.openai)"]
         PE["Private Endpoint\npe-openai"]
         DNS["Private DNS Zone\nprivatelink.openai.azure.com"]
 
@@ -199,67 +252,70 @@ flowchart TB
 **Đọc sơ đồ này như thế nào:**
 - Đường nét liền có nhãn "role: ..." = một `azurerm_role_assignment` (RBAC) — quyền, không phải kết nối mạng.
 - Đường nét đứt `-.->` = quan hệ hạ tầng mạng (subnet, private endpoint, DNS).
-- 3 mũi tên "secret: ..." từ KV ra Cosmos/ServiceBus/OpenAI thực ra đi **ngược chiều dữ liệu**: Terraform đọc connection string/key từ Cosmos/ServiceBus/OpenAI rồi **ghi vào** Key Vault ([keyvault-secrets.tf](keyvault-secrets.tf)) — vẽ theo chiều "KV chứa thông tin của" cho dễ hình dung.
+- 3 mũi tên "secret: ..." từ KV ra Cosmos/ServiceBus/OpenAI thực ra đi **ngược chiều dữ liệu**: Terraform đọc connection string/key từ Cosmos/ServiceBus/OpenAI rồi **ghi vào** Key Vault ([modules/secrets/main.tf](modules/secrets/main.tf)) — vẽ theo chiều "KV chứa thông tin của" cho dễ hình dung.
 - Ứng dụng (AdminSite/StoreFront/ProductWorker chạy trong pod AKS, xem [../k8s/](../k8s/)) sẽ đọc secret ngược lại từ KV qua CSI Driver, không tự gọi trực tiếp Cosmos/ServiceBus bằng key hard-code.
 
 ---
 
 ## Phần 3 — Thứ tự Terraform thực sự tạo resource (dependency graph)
 
-Đây là thứ tự Terraform tự suy ra được từ các tham chiếu (mục 1.1), **không phải thứ tự các file `.tf` bạn viết** — Terraform đọc TẤT CẢ file `.tf` trong folder cùng lúc rồi tự dựng graph, thứ tự file/tên file không quan trọng.
+Đây là thứ tự Terraform tự suy ra được từ các tham chiếu (mục 1.1), **không phải thứ tự các file `.tf` hay các `module` block bạn viết** — Terraform đọc TẤT CẢ file `.tf` (kể cả bên trong mọi module) cùng lúc rồi tự dựng graph, thứ tự khai báo không quan trọng. Tên đầy đủ mỗi resource trong graph dưới đây khớp với những gì `terraform state list` in ra.
 
 ```mermaid
 flowchart LR
-    RG["azurerm_resource_group.rg"] --> VNET["azurerm_virtual_network.vnet"]
-    VNET --> SUBAKS["azurerm_subnet.aks_subnet"]
-    VNET --> SUBPE["azurerm_subnet.pe_subnet"]
-    RG --> DNS["azurerm_private_dns_zone.openai_dns"]
-    VNET --> DNSLINK["...vnet_link"]
+    RG["azurerm_resource_group.rg (root)"] --> VNET["module.network.azurerm_virtual_network.vnet"]
+    VNET --> SUBAKS["module.network...subnet.aks_subnet"]
+    VNET --> SUBPE["module.network...subnet.pe_subnet"]
+    RG --> DNS["module.network...private_dns_zone.openai_dns"]
+    VNET --> DNSLINK["module.network...vnet_link"]
     DNS --> DNSLINK
 
-    RG --> ID["azurerm_user_assigned_identity.aks_identity"]
-    RG --> RAND["random_string.suffix"]
+    RG --> ID["module.identity...user_assigned_identity.aks_identity"]
+    ID --> IDROLE["module.identity...role_assignment.aks_identity_operator"]
+    IDROLE --> IDSLEEP["module.identity.time_sleep.wait_for_identity_rbac"]
+    RG --> RAND["random_string.suffix (root)"]
 
-    RG --> ACR["azurerm_container_registry.acr"]
-    ID --> ACRROLE["azurerm_role_assignment.aks_acr_pull"]
+    RG --> ACR["module.acr...container_registry.acr"]
+    IDSLEEP --> ACRROLE["module.acr...role_assignment.aks_acr_pull"]
     ACR --> ACRROLE
 
-    RG --> KV["azurerm_key_vault.kv"]
+    RG --> KV["module.keyvault.azurerm_key_vault.kv"]
     RAND --> KV
-    ID --> KVROLE1["role: aks_kv_reader"]
+    IDSLEEP --> KVROLE1["module.keyvault...role_assignment.aks_kv_reader"]
     KV --> KVROLE1
-    KV --> KVROLE2["role: terraform_caller_kv_officer"]
+    KV --> KVROLE2["module.keyvault...role_assignment.terraform_caller_kv_officer"]
 
-    SUBAKS --> AKS["azurerm_kubernetes_cluster.aks"]
-    ID --> AKS
+    SUBAKS --> AKS["module.aks.azurerm_kubernetes_cluster.aks"]
+    IDSLEEP --> AKS
 
-    RG --> COSMOS["azurerm_cosmosdb_account.cosmos"]
+    RG --> COSMOS["module.cosmosdb...cosmosdb_account.cosmos"]
     RAND --> COSMOS
-    COSMOS --> DB["...sql_database.db"]
-    DB --> C1["...sql_container.products"]
-    DB --> C2["...sql_container.orders"]
+    COSMOS --> DB["module.cosmosdb...sql_database.db"]
+    DB --> C1["module.cosmosdb...sql_container.products"]
+    DB --> C2["module.cosmosdb...sql_container.orders"]
 
-    RG --> SB["azurerm_servicebus_namespace.sb"]
+    RG --> SB["module.servicebus...servicebus_namespace.sb"]
     RAND --> SB
-    SB --> QUEUE["azurerm_servicebus_queue.queue"]
+    SB --> QUEUE["module.servicebus...servicebus_queue.queue"]
 
-    RAND --> OAI["azurerm_cognitive_account.openai"]
-    OAI --> DEPLOY["azurerm_cognitive_deployment.openai_model"]
-    OAI --> PE["azurerm_private_endpoint.openai_pe"]
+    RAND --> OAI["module.openai...cognitive_account.openai"]
+    OAI --> DEPLOY["module.openai...cognitive_deployment.openai_model"]
+    DEPLOY --> OAISLEEP["module.openai.time_sleep.wait_for_openai"]
+    OAISLEEP --> PE["module.openai...private_endpoint.openai_pe"]
     SUBPE --> PE
     DNS --> PE
 
-    COSMOS --> SECRET1["key_vault_secret: cosmosdb-connectionstring"]
+    COSMOS --> SECRET1["module.secrets...key_vault_secret.cosmosdb_connectionstring"]
     KVROLE2 --> SECRET1
-    SB --> SECRET2["key_vault_secret: servicebus-connectionstring"]
+    SB --> SECRET2["module.secrets...key_vault_secret.servicebus_connectionstring"]
     KVROLE2 --> SECRET2
-    OAI --> SECRET3["key_vault_secret: openai-endpoint/key"]
-    DEPLOY --> SECRET4["key_vault_secret: openai-deployment"]
+    OAI --> SECRET3["module.secrets...key_vault_secret.openai_endpoint/openai_key"]
+    DEPLOY --> SECRET4["module.secrets...key_vault_secret.openai_deployment"]
     KVROLE2 --> SECRET3
     KVROLE2 --> SECRET4
 ```
 
-**Ý nghĩa thực tế:** khi bạn chạy `terraform apply`, các nhánh KHÔNG phụ thuộc nhau (vd `ACR`, `KV`, `COSMOS`, `SB`, `OAI` đều chỉ phụ thuộc `RG`) sẽ được Terraform **tạo song song** để nhanh hơn — đây là lý do dùng IaC nhanh hơn hẳn so với chạy tuần tự từng lệnh `az cli` bằng tay như ở Phase 1 của lộ trình học.
+**Ý nghĩa thực tế:** khi bạn chạy `terraform apply`, các nhánh KHÔNG phụ thuộc nhau (vd `module.acr`, `module.keyvault`, `module.cosmosdb`, `module.servicebus`, `module.openai` đều chỉ phụ thuộc `RG`) sẽ được Terraform **tạo song song** để nhanh hơn — module hóa KHÔNG làm mất khả năng chạy song song này, vì Terraform vẫn dựng graph ở cấp resource thật bên trong, "module" chỉ là cách tổ chức code chứ không tạo ra 1 lớp hàng đợi tuần tự. Đây là lý do dùng IaC nhanh hơn hẳn so với chạy tuần tự từng lệnh `az cli` bằng tay như ở Phase 1 của lộ trình học.
 
 ---
 
@@ -294,15 +350,17 @@ sequenceDiagram
 
 ## Câu hỏi tự kiểm tra (đừng đọc đáp án trước)
 
-1. Nếu xoá dòng `location = azurerm_resource_group.rg.location` trong `acr.tf` và thay bằng `location = "japaneast"` (hard-code), Terraform còn biết phải tạo `rg` trước `acr` không? Vì sao?
-2. `count = var.principal_id != "" ? 1 : 0` — nếu `principal_id` có giá trị, muốn tham chiếu tới resource đó ở nơi khác phải viết thế nào (gợi ý: khác với resource không có `count`)?
-3. Trong sơ đồ Phần 3, vì sao `azurerm_key_vault_secret.cosmosdb_connectionstring` phải phụ thuộc cả `COSMOS` lẫn `KVROLE2`, thiếu 1 trong 2 thì `terraform apply` sẽ lỗi ở bước nào?
+1. Nếu ở `main.tf` (root), dòng `location = azurerm_resource_group.rg.location` trong `module "acr"` bị đổi thành `location = "japaneast"` (hard-code), Terraform còn biết phải tạo `rg` trước `module.acr` không? Vì sao?
+2. `count = var.principal_id != "" ? 1 : 0` trong `modules/keyvault/main.tf` — nếu `principal_id` có giá trị, muốn tham chiếu resource đó **từ root** (ngoài module) phải viết địa chỉ đầy đủ thế nào?
+3. Trong sơ đồ Phần 3, vì sao `module.secrets...key_vault_secret.cosmosdb_connectionstring` phải phụ thuộc cả `COSMOS` lẫn `KVROLE2`, thiếu 1 trong 2 thì `terraform apply` sẽ lỗi ở bước nào?
+4. Nếu bạn sửa `modules/aks/main.tf` để nó tự viết thẳng `azurerm_user_assigned_identity.aks_identity.id` thay vì dùng `var.identity_id`, `terraform validate` sẽ báo lỗi gì?
 
 <details>
 <summary>Gợi ý đáp án</summary>
 
-1. Vẫn biết — vì `resource_group_name = azurerm_resource_group.rg.name` ở dòng khác trong cùng resource vẫn còn tham chiếu, chỉ cần 1 tham chiếu là đủ để Terraform dựng dependency. Nhưng đây là lý do KHÔNG nên hard-code bất kỳ field nào có thể tham chiếu được — mất tham chiếu ở tất cả field mới thực sự mất dependency.
-2. `azurerm_role_assignment.user_kv_officer[0]` — vì có `count`, resource trở thành 1 danh sách (list), phải chỉ định index.
-3. Thiếu `COSMOS` → lỗi vì chưa có connection string để đọc (giá trị chưa tồn tại). Thiếu `KVROLE2` → lỗi 403 Forbidden vì danh tính chạy Terraform chưa có quyền ghi secret vào Key Vault.
+1. Vẫn biết — vì `resource_group_name = azurerm_resource_group.rg.name` ở dòng khác trong cùng `module` block vẫn còn tham chiếu, chỉ cần 1 tham chiếu là đủ để Terraform dựng dependency giữa root và module. Nhưng đây là lý do KHÔNG nên hard-code bất kỳ field nào có thể tham chiếu được — mất tham chiếu ở tất cả field mới thực sự mất dependency.
+2. `module.keyvault.azurerm_role_assignment.user_kv_officer[0]` — cộng tiền tố `module.keyvault.` vì resource nằm trong module, và vẫn giữ `[0]` vì có `count`.
+3. Thiếu `COSMOS` → lỗi vì chưa có connection string để đọc (giá trị chưa tồn tại). Thiếu `KVROLE2` → lỗi 403 Forbidden vì danh tính chạy Terraform chưa có quyền ghi secret vào Key Vault (đây là lý do `main.tf` phải truyền `module.keyvault.id_ready_for_secrets`, không phải `module.keyvault.id`, vào `module "secrets"`).
+4. Lỗi "Reference to undeclared resource" — bên trong 1 module chỉ được tham chiếu resource/data do chính module đó khai báo, không được "nhìn xuyên" sang resource của root hay module khác. Đây là ranh giới cố ý của Terraform để module dùng lại được ở nhiều nơi khác nhau mà không phụ thuộc ngầm vào tên resource cụ thể ở nơi gọi nó.
 
 </details>

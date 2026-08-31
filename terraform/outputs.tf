@@ -3,53 +3,53 @@ output "resource_group_name" {
 }
 
 output "acr_name" {
-  value = azurerm_container_registry.acr.name
+  value = module.acr.name
 }
 
 output "acr_login_server" {
-  value = azurerm_container_registry.acr.login_server
+  value = module.acr.login_server
 }
 
 output "aks_name" {
-  value = azurerm_kubernetes_cluster.aks.name
+  value = module.aks.name
 }
 
 output "aks_identity_client_id" {
-  value = azurerm_user_assigned_identity.aks_identity.client_id
+  value = module.identity.client_id
 }
 
 output "aks_oidc_issuer_url" {
-  value = azurerm_kubernetes_cluster.aks.oidc_issuer_url
+  value = module.aks.oidc_issuer_url
 }
 
 output "cosmosdb_account_name" {
-  value = azurerm_cosmosdb_account.cosmos.name
+  value = module.cosmosdb.account_name
 }
 
 output "cosmosdb_endpoint" {
-  value = azurerm_cosmosdb_account.cosmos.endpoint
+  value = module.cosmosdb.endpoint
 }
 
 output "servicebus_namespace" {
-  value = azurerm_servicebus_namespace.sb.name
+  value = module.servicebus.namespace_name
 }
 
 output "keyvault_name" {
-  value = azurerm_key_vault.kv.name
+  value = module.keyvault.name
 }
 
 output "keyvault_uri" {
-  value = azurerm_key_vault.kv.vault_uri
+  value = module.keyvault.vault_uri
 }
 
 output "openai_name" {
-  value = azurerm_cognitive_account.openai.name
+  value = module.openai.name
 }
 
 output "openai_endpoint" {
-  value = azurerm_cognitive_account.openai.endpoint
+  value = module.openai.endpoint
 }
 
 output "openai_deployment_name" {
-  value = azurerm_cognitive_deployment.openai_model.name
+  value = module.openai.deployment_name
 }
