@@ -1,8 +1,3 @@
-# Toàn bộ default value bên dưới được đồng bộ với scripts/env.conf (bản PowerShell)
-# để 2 cách deploy (PowerShell thủ công vs Terraform) tạo ra hạ tầng tương đương.
-
-# ---------- Chung ----------
-
 variable "resource_group_name" {
   type        = string
   description = "Tên resource group"
@@ -39,9 +34,6 @@ variable "acr_name" {
 }
 
 # ---------- AKS ----------
-# Lưu ý free-tier / Azure for Students: chỉ dùng 1 node pool duy nhất (không tách
-# system/user pool như bản Bicep gốc) để tiết kiệm quota vCPU, và sku_tier = Free
-# để không mất phí control plane (~73 USD/tháng nếu để Standard).
 
 variable "aks_name" {
   type        = string

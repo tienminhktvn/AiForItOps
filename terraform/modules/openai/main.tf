@@ -1,5 +1,3 @@
-# Tương đương infra/core/openai.bicep
-#
 # custom_subdomain_name là bắt buộc để dùng được Private Endpoint (nếu không set,
 # Azure không tạo DNS record riêng cho resource -> private_endpoint bên dưới sẽ lỗi).
 
@@ -24,8 +22,6 @@ resource "azurerm_cognitive_deployment" "openai_model" {
     version = var.model_version
   }
 
-  # GlobalStandard rẻ hơn Standard và vẫn nằm trong quota mặc định của subscription
-  # free-tier/student. capacity tính theo nghìn TPM (tokens-per-minute).
   sku {
     name     = "GlobalStandard"
     capacity = var.sku_capacity

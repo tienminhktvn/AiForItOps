@@ -1,5 +1,3 @@
-# Tương đương infra/core/cosmosdb.bicep
-
 resource "azurerm_cosmosdb_account" "cosmos" {
   name                = var.account_name
   location            = var.location
@@ -28,7 +26,6 @@ resource "azurerm_cosmosdb_sql_database" "db" {
   resource_group_name = var.resource_group_name
   account_name        = azurerm_cosmosdb_account.cosmos.name
 
-  # Throughput dùng chung cho cả 2 container bên dưới, giữ trong hạn mức free tier.
   throughput = var.shared_throughput
 }
 

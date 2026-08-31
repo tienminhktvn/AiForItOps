@@ -1,5 +1,3 @@
-# Tương đương infra/core/servicebus.bicep
-
 resource "azurerm_servicebus_namespace" "sb" {
   name                = var.namespace_name
   location            = var.location

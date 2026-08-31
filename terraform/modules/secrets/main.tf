@@ -1,6 +1,3 @@
-# Tương đương infra/core/keyvault-secrets.bicep — lưu các connection string/key
-# vào Key Vault để AKS đọc qua Secrets Store CSI Driver thay vì hard-code trong app.
-
 resource "azurerm_key_vault_secret" "cosmosdb_connectionstring" {
   name         = "cosmosdb-connectionstring"
   value        = var.cosmosdb_connection_string
